@@ -21,7 +21,7 @@ func main() {
 	// ICMP 探测存活主机
 	aliveHosts := ping.GetAliveHosts(ips, 10, false)
 	// SYN 扫描全端口开放 => 具体配置自定义 ~
-	resultMap := scan.NewScan(aliveHosts, 6, false, 3, 10).RunEnumeration().WaitAndClose().GetResult()
+	resultMap := scan.NewScan(aliveHosts, 45, false, 3, 10).RunEnumeration().WaitAndClose().GetResult()
 	// fingerprintx 指纹识别
 	results := fingerprintx.NewFingerPrint(resultMap, false).GetFingerPrints().GetResultMap()
 	// 对端口号进行排序 这里只是为了输出 json 的美观
