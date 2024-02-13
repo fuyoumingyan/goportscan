@@ -14,6 +14,7 @@
 
 ```
 go get github.com/fuyoumingyan/goportscan@v1.0.0
+go mod tidy
 ```
 
 ```go
