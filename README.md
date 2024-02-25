@@ -23,24 +23,14 @@ func main() {
 	ips := []string{"123.254.105.104"}
 	// ICMP 探测存活主机
 	aliveHosts := ping.GetAliveHosts(ips, 10, false)
-	// SYN 扫描全端口开放 => 具体配置自定义 ~ 45 3 10 这些配置可以再自己机器跑一下 看看具体的效果 找出比较好的 
-	resultMap := scan.NewScan(aliveHosts, 45, false, 3, 10).RunEnumeration().WaitAndClose().GetResult()
+	// SYN 扫描全端口开放
+	resultMap := scan.NewScan(aliveHosts, 3000, false, 10).RunEnumeration().WaitAndClose().GetResult()
 	// fingerprintx 指纹识别
-	results := fingerprintx.NewFingerPrint(resultMap, false).GetFingerPrints().GetResultMap()
-	// 对端口号进行排序 这里只是为了输出 json 的美观
-	for _, services := range results {
-		sort.Slice(services, func(i, j int) bool {
-			return services[i].Port < services[j].Port
-		})
-	}
-	jsonData, _ := json.MarshalIndent(results, "", "    ")
-	fmt.Println(string(jsonData))
+	results := fingerprintx.NewFingerPrint(resultMap, false, 10).GetFingerPrints().GetResultMap()
+	// 输出结果
+	PrintTable(results)
 	gologger.Info().Msgf("用时 : %v\n", time.Since(start).String())
 }
 ```
 
-![image-20240213213530661](README.assets/image-20240213213530661.png)
-
-![image-20240213213535005](README.assets/image-20240213213535005.png)
-
-<img src="README.assets/image-20240213213622291.png" alt="image-20240213213622291" style="zoom:67%;" />
+![image-20240225161420267](https://gallery-1310215391.cos.ap-beijing.myqcloud.com/img/image-20240225161420267.png)

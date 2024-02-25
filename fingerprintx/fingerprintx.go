@@ -1,11 +1,10 @@
 package fingerprintx
 
 import (
-	"github.com/fuyoumingyan/utils/progress"
+	"github.com/fuyoumingyan/utils/limiter"
 	"github.com/praetorian-inc/fingerprintx/pkg/plugins"
 	"github.com/praetorian-inc/fingerprintx/pkg/scan"
 	"github.com/projectdiscovery/gologger"
-	"github.com/schollz/progressbar/v3"
 	"net/netip"
 	"strings"
 	"time"
@@ -16,11 +15,15 @@ type FingerPrint struct {
 	Results  []*plugins.Service
 	netIpMap map[string]netip.Addr
 	config   scan.Config
-	bar      *progressbar.ProgressBar
+	wg       *limiter.Limiter
 }
 
-func NewFingerPrint(portInfoMap map[string]map[uint16]struct{}, show bool) *FingerPrint {
+// NewFingerPrint 指纹识别
+// show => 进度条跑完之后是否还显示
+// limitNum => 并发限制
+func NewFingerPrint(portInfoMap map[string]map[uint16]struct{}, limitNum int) *FingerPrint {
 	f := new(FingerPrint)
+	f.wg = limiter.New(limitNum)
 	for ip, ports := range portInfoMap {
 		addr, err := netip.ParseAddr(ip)
 		if err != nil {
@@ -32,7 +35,6 @@ func NewFingerPrint(portInfoMap map[string]map[uint16]struct{}, show bool) *Fing
 			})
 		}
 	}
-	f.bar = progress.NewProgressbar(int64(len(f.Targets)), "指纹识别", show)
 	f.config = scan.Config{
 		DefaultTimeout: time.Duration(2) * time.Second,
 		FastMode:       false,
@@ -43,12 +45,7 @@ func NewFingerPrint(portInfoMap map[string]map[uint16]struct{}, show bool) *Fing
 }
 
 func (f *FingerPrint) getSingleFingerPrint(scanTarget plugins.Target) {
-	defer func() {
-		err := f.bar.Add(1)
-		if err != nil {
-			gologger.Error().Msg(err.Error())
-		}
-	}()
+	defer f.wg.Done()
 	result, err := f.config.SimpleScanTarget(scanTarget)
 	if err == nil && result != nil {
 		f.Results = append(f.Results, result)
@@ -57,18 +54,10 @@ func (f *FingerPrint) getSingleFingerPrint(scanTarget plugins.Target) {
 
 func (f *FingerPrint) GetFingerPrints() *FingerPrint {
 	for _, scanTarget := range f.Targets {
-		f.getSingleFingerPrint(scanTarget)
+		f.wg.Add()
+		go f.getSingleFingerPrint(scanTarget)
 	}
-	err := f.bar.Finish()
-	if err != nil {
-		gologger.Error().Msg(err.Error())
-		return f
-	}
-	err = f.bar.Close()
-	if err != nil {
-		gologger.Error().Msg(err.Error())
-		return f
-	}
+	f.wg.WaitAndClose()
 	return f
 }
 

@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"github.com/fuyoumingyan/goportscan/fingerprintx"
 	"github.com/fuyoumingyan/goportscan/ping"
 	"github.com/fuyoumingyan/goportscan/scan"
@@ -10,7 +9,6 @@ import (
 	"github.com/jedib0t/go-pretty/v6/text"
 	"github.com/projectdiscovery/gologger"
 	"os"
-	"sort"
 	"time"
 )
 
@@ -40,18 +38,15 @@ func main() {
 	start := time.Now()
 	ips := []string{"123.254.105.104"}
 	// ICMP 探测存活主机
-	aliveHosts := ping.GetAliveHosts(ips, 10, false)
+	aliveHosts := ping.GetAliveHosts(ips, 10)
 	// SYN 扫描全端口开放
-	resultMap := scan.NewScan(aliveHosts, 6, false, 3, 10).RunEnumeration().WaitAndClose().GetResult()
+	resultMap := scan.NewScan(aliveHosts, 3000, 10, false).RunEnumeration().WaitAndClose().GetResult()
 	// fingerprintx 指纹识别
-	results := fingerprintx.NewFingerPrint(resultMap, false).GetFingerPrints().GetResultMap()
-	// 对端口号进行排序 这里只是为了输出 json 的美观
-	for _, services := range results {
-		sort.Slice(services, func(i, j int) bool {
-			return services[i].Port < services[j].Port
-		})
+	results := fingerprintx.NewFingerPrint(resultMap, 10).GetFingerPrints().GetResultMap()
+	bytes, err := json.MarshalIndent(results, "", "	")
+	if err != nil {
+		return
 	}
-	jsonData, _ := json.MarshalIndent(results, "", "    ")
-	fmt.Println(string(jsonData))
+	println(string(bytes))
 	gologger.Info().Msgf("用时 : %v\n", time.Since(start).String())
 }

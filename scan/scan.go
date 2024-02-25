@@ -11,6 +11,7 @@ import (
 	"github.com/phayes/freeport"
 	_ "github.com/projectdiscovery/fdmax/autofdmax"
 	"github.com/projectdiscovery/gologger"
+	"github.com/projectdiscovery/ratelimit"
 	"github.com/schollz/progressbar/v3"
 	"math/rand"
 	"net"
@@ -30,22 +31,21 @@ type Scan struct {
 	SerializeOptions gopacket.SerializeOptions      // 发包序列化设置
 	bufferPool       sync.Pool                      // 缓存区池子
 	wg               sync.WaitGroup                 // 监听协程和控制结束协程的控制操作
+	limiter          *ratelimit.Limiter
 	ctx              context.Context
 	r                *rand.Rand
 	cancel           context.CancelFunc
 	entropy          uint64 // 密钥
-	allPorts         [][]uint16
+	allPorts         []uint16
 	bar              *progressbar.ProgressBar // 进度条
 	allWait          int
-	singleWait       int
 }
 
-// NewScan
-// numSlices : 将全端口分割为多少份进行扫描
+// NewScan 端口扫描
 // show : 进度条走完之后是否显示
-// singleWait : 每一份扫描完成之后等待多久再扫描下一份
-// allWait : 所有的 SYN 包发送完成之后 等待多少秒
-func NewScan(ips []string, numSlices int, show bool, singleWait, allWait int) *Scan {
+// rate => 速率 3000
+// allWaite => SYN包发完后等待多少秒 10
+func NewScan(ips []string, rate int, allWait int, show bool) *Scan {
 	if len(ips) <= 0 {
 		gologger.Fatal().Msg("targets is null !")
 		return nil
@@ -53,16 +53,17 @@ func NewScan(ips []string, numSlices int, show bool, singleWait, allWait int) *S
 	s := new(Scan)
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 	s.allWait = allWait
-	s.singleWait = singleWait
 	for _, ip := range ips {
 		if ipStrToIPv4(ip) == nil {
 			gologger.Fatal().Msgf("%v is not a valid IPv4 address !\n", ip)
 		}
 	}
+	s.limiter = ratelimit.New(context.Background(), uint(rate), time.Second)
 	s.FirewallsMap = make(map[string]struct{}, len(ips))
 	s.bar = progress.NewProgressbar(int64(65535*len(ips)), "端口扫描", show)
 	s.IPS = ips
-	s.allPorts = generatePortSlices(numSlices)
+	s.r = rand.New(rand.NewSource(time.Now().UnixNano()))
+	s.allPorts = generatePortSlices(s.r)
 	s.ResultMap = make(map[string]map[uint16]struct{})
 	s.NetWorkBaseInfo = new(NetWorkInfo).GetBaseInfo(ips[0])
 	s.SerializeOptions = gopacket.SerializeOptions{
@@ -74,7 +75,6 @@ func NewScan(ips []string, numSlices int, show bool, singleWait, allWait int) *S
 			return gopacket.NewSerializeBuffer()
 		},
 	}
-	s.r = rand.New(rand.NewSource(99))
 	s.entropy = s.r.Uint64()
 	handle, err := pcap.OpenLive(s.NetWorkBaseInfo.DeviceName, 1024, false, pcap.BlockForever)
 	if err != nil {
@@ -235,48 +235,43 @@ func (s *Scan) getDesIPMacAddress(desIP string) string {
 	}
 }
 
-// generatePortSlices 将 65535 个端口号分割 Top 1000 端口优先扫描
-// 在 windows 系统下使用 rate 控制速率 但是发现 windows 下有时候的大端口扫描不到 测试如果将端口分割为多份然后 sleep 这样的话比较准确一点
-// 可以利用这个和每份扫描的 sleep 来控制速率
-func generatePortSlices(numSlices int) [][]uint16 {
+func generatePortSlices(r *rand.Rand) []uint16 {
 	const maxPortNumber = 65535
-	portSlices := make([][]uint16, numSlices+1)
-	portSlices[0] = TopTcpPorts
 	topPortsMap := make(map[uint16]struct{})
+	var nonTopPorts []uint16
 	for _, port := range TopTcpPorts {
 		topPortsMap[port] = struct{}{}
 	}
-	nextSlice := 1
 	for port := uint16(1); true; port++ {
 		if _, exists := topPortsMap[port]; !exists {
-			if len(portSlices[nextSlice]) >= maxPortNumber/numSlices {
-				nextSlice++
-			}
-			portSlices[nextSlice] = append(portSlices[nextSlice], port)
+			nonTopPorts = append(nonTopPorts, port)
 		}
 		if port == maxPortNumber {
 			break
 		}
 	}
-	return portSlices
+	for i := len(nonTopPorts) - 1; i > 0; i-- {
+		j := r.Intn(i + 1)
+		nonTopPorts[i], nonTopPorts[j] = nonTopPorts[j], nonTopPorts[i]
+	}
+	TopTcpPorts = append(TopTcpPorts, nonTopPorts...)
+	return TopTcpPorts
 }
 
 func (s *Scan) run(desIP string) {
 	DesMac := s.getDesIPMacAddress(desIP)
-	for _, ports := range s.allPorts {
-		for _, port := range ports {
-			if len(s.ResultMap[desIP]) > 500 {
-				s.FirewallsMap[desIP] = struct{}{}
-				return
-			}
-			s.sendACK(DesMac, desIP, port)
-			err := s.bar.Add(1)
-			if err != nil {
-				gologger.Info().Msg(err.Error())
-				return
-			}
+	for _, port := range s.allPorts {
+		if len(s.ResultMap[desIP]) > 500 {
+			s.FirewallsMap[desIP] = struct{}{}
+			return
 		}
-		time.Sleep(time.Duration(s.singleWait) * time.Second)
+		s.limiter.Take()
+		s.sendACK(DesMac, desIP, port)
+		err := s.bar.Add(1)
+		if err != nil {
+			gologger.Info().Msg(err.Error())
+			return
+		}
 	}
 }
 
